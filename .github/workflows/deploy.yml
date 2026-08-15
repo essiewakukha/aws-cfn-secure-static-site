@@ -9,7 +9,6 @@ on:
         description: 'Fraction of traffic to canary (0-0.15)'
         default: '0.10'
 
-jobs:
   deploy:
     runs-on: ubuntu-latest
     permissions:
