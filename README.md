@@ -9,8 +9,10 @@ credentials (OIDC).
 **Live site:** https://d1xzsblye2kc6p.cloudfront.net
 
 ## Repo layout
+## Repo layout
+
 app/ React app (Vite)
-cloudformation/ 5 nested-stack templates + deploy README
+cloudformation/ 5 nested-stack templates
 scripts/ Canary health check + promotion logic
 .github/workflows/ deploy.yml — the CI/CD pipeline
 
@@ -36,18 +38,98 @@ skills, and project list. No component code needs to change.
 
 ## Deploying
 
-Full step-by-step (one-time bootstrap + how the ongoing pipeline works) is
-in [`cloudformation/README.md`](./cloudformation/README.md).
+### One-time bootstrap (do this by hand, once, with your own AWS credentials)
 
-## How the canary deploy works
-Every push after the first builds the app, uploads it to its own
-`releases/<commit-sha>/` S3 prefix, opens a 10% canary on the staging
-CloudFront distribution, waits for CloudWatch to collect enough datapoints,
-and either promotes to production (5xx alarm stayed OK) or leaves it be
-(alarm tripped — blast radius was capped at 15% the whole time). Promotion
-is an imperative CloudFront API call (`UpdateDistributionWithStagingConfig`),
-so the pipeline also reconciles CloudFormation's declared state afterward
-to avoid drift.
+The pipeline needs an IAM role to assume and a bucket to stage templates in
+before it can deploy anything itself - so this first step isn't automated.
+
+```bash
+aws cloudformation deploy \
+  --stack-name react-portfolio-bootstrap \
+  --template-file cloudformation/iam.yml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --region us-east-1 \
+  --parameter-overrides \
+    AppName=react-portfolio \
+    GitHubOrg=your-github-username \
+    GitHubOrgId=your-numeric-github-account-id \
+    GitHubRepo=your-repo-name \
+    GitHubRepoId=your-numeric-github-repo-id \
+    CreateOidcProvider=true
+```
+
+`GitHubOrgId` and `GitHubRepoId` matter because GitHub's OIDC token now
+sends an "immutable" `sub` claim with numeric IDs embedded in it (see
+Incident #1 below) - find them via:
+```bash
+curl -s https://api.github.com/users/YOUR_USERNAME | jq .id
+curl -s https://api.github.com/repos/YOUR_USERNAME/YOUR_REPO | jq .id
+```
+
+If you've connected GitHub Actions to AWS before on this same account, the
+OIDC provider is account-wide (not per-project) and may already exist - set
+`CreateOidcProvider=false` and add `ExistingOidcProviderArn=...` instead, or
+CloudFormation will fail trying to create a duplicate.
+
+Then read the two outputs and put them in the GitHub repo's
+**Settings → Secrets and variables → Actions → Variables** tab:
+
+```bash
+aws cloudformation describe-stacks --stack-name react-portfolio-bootstrap \
+  --query 'Stacks[0].Outputs'
+```
+
+| Output               | GitHub variable name  |
+|-----------------------|------------------------|
+| `DeployRoleArn`        | `AWS_DEPLOY_ROLE_ARN`  |
+| `ArtifactsBucketName`  | `AWS_ARTIFACTS_BUCKET` |
+
+Optionally also add a repo variable `ALERT_EMAIL` if you want deploy/rollback
+notifications - you'll get one confirmation email to accept the SNS
+subscription the first time the stack deploys.
+
+### Every deploy after that: just push to `main`
+
+`.github/workflows/deploy.yml` handles the rest:
+
+1. **First push** creates the whole stack (S3, both CloudFront distributions,
+   the continuous deployment policy, monitoring) with no canary - there's no
+   live traffic yet, so there's nothing to canary against.
+2. **Every push after that**: builds, uploads the new release to its own
+   `releases/<commit-sha>/` prefix, opens a 10% canary on the staging
+   distribution, waits for two CloudWatch evaluation periods, and either
+   promotes (if the 5xx alarm stayed OK) or leaves it be (if it tripped -
+   blast radius was capped at 15% traffic the whole time).
+
+### Checking for drift
+
+`UpdateDistributionWithStagingConfig` changes the primary distribution
+outside of CloudFormation's knowledge, which is exactly the kind of thing
+that causes stack drift. The pipeline resolves this itself (see
+`scripts/canary.sh`), but you can verify it's actually clean:
+
+```bash
+aws cloudformation detect-stack-drift --stack-name react-portfolio
+# then, after a few seconds:
+aws cloudformation describe-stack-drift-detection-status \
+  --stack-drift-detection-id <id-from-previous-command>
+```
+
+### Manual promote/rollback (if you ever need to intervene)
+
+```bash
+# Check the canary alarm directly
+aws cloudwatch describe-alarms --alarm-names react-portfolio-canary-5xx-error-rate
+
+# Preview a candidate release before/without exposing it to real traffic
+open https://<StagingDomainName from stack outputs>
+
+# Force-stop a canary without promoting (reset weight to 0)
+aws cloudformation deploy --stack-name react-portfolio \
+  --template-file cloudformation/main.packaged.yml \
+  --parameter-overrides CanaryEnabled=false CanaryWeight=0 \
+  --capabilities CAPABILITY_NAMED_IAM
+```
 
 ---
 
@@ -64,7 +146,11 @@ the `permissions: id-token: write` block was in place.
 
 **Root cause:** GitHub changed the format of the OIDC token's `sub` claim.
 It no longer sends the plain `repo:owner/repo:*` string — it sends an
-**immutable** form with numeric IDs embedded in the middle: 'repo:essiewakukha@137600196/aws-cfn-secure-static-site@1332408105:ref:refs/heads/main'
+**immutable** form with numeric IDs embedded in the middle:
+
+'''
+repo:essiewakukha@137600196/aws-cfn-secure-static-site@1332408105:ref:refs/heads/main 
+'''
 The trust policy's `StringLike` condition was written for the old
 plain-name format, so it silently never matched — `StringLike`'s wildcard
 only trails at the end of a pattern, it can't match around an unexpected
@@ -179,6 +265,23 @@ documented only in the underlying API reference.
 STAGING_ETAG=$(aws cloudfront get-distribution --id "$STAGING_DISTRIBUTION_ID" --query 'ETag' --output text)
 --if-match "${PRIMARY_ETAG}, ${STAGING_ETAG}"
 ```
+
+### 9. `Invalid template path cloudformation/main.packaged.yml`
+**Symptom:** Promotion itself succeeded — CloudFront confirmed the primary
+distribution now served the canaried release — but the final step (syncing
+CloudFormation's declared state to match) failed immediately after.
+
+**Root cause:** `main.packaged.yml` is a generated file, created by `aws
+cloudformation package` in an earlier job (`deploy-infra`). Each GitHub
+Actions job runs on its own fresh runner with an empty workspace — files
+created in one job don't automatically exist in a later job unless
+explicitly passed via `actions/upload-artifact`/`download-artifact`. The
+promote job (`canary-bake-and-promote`) never had that file.
+
+**Fix:** Re-ran `aws cloudformation package` again in the promote job,
+right before the step that needs it. Regenerating it is cheap and
+idempotent, so this was simpler than wiring up an artifact transfer between
+jobs for one file.
 
 ---
 
