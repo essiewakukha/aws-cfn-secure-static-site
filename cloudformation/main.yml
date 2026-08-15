@@ -25,19 +25,22 @@ Parameters:
     Type: String
     Default: 'false'
     AllowedValues: ['true', 'false']
+  AlertEmail:
+    Type: String
+    Default: ''
 
 Resources:
   S3Stack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: ./s3-bucket.yaml
+      TemplateURL: ./s3-bucket.yml
       Parameters:
         AppName: !Ref AppName
 
   CloudFrontStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: ./cloudfront.yaml
+      TemplateURL: ./cloudfront.yml
       Parameters:
         AppName: !Ref AppName
         BucketName: !GetAtt S3Stack.Outputs.BucketName
@@ -46,6 +49,15 @@ Resources:
         CandidateReleaseId: !Ref CandidateReleaseId
         CanaryWeight: !Ref CanaryWeight
         CanaryEnabled: !Ref CanaryEnabled
+
+  MonitoringStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./monitoring.yml
+      Parameters:
+        AppName: !Ref AppName
+        StagingDistributionId: !GetAtt CloudFrontStack.Outputs.StagingDistributionId
+        AlertEmail: !Ref AlertEmail
 
 Outputs:
   BucketName:
@@ -60,3 +72,6 @@ Outputs:
   StagingDomainName:
     Value: !GetAtt CloudFrontStack.Outputs.StagingDomainName
     Description: Direct URL to preview a candidate release before/without canarying it
+  CanaryAlarmName:
+    Value: !GetAtt MonitoringStack.Outputs.AlarmName
+    Description: Pipeline polls this alarm's state before promoting a canary
