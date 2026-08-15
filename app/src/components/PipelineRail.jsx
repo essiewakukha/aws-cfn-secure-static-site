@@ -41,7 +41,7 @@ export default function PipelineRail() {
       <ul className="rail-nodes">
         {pipelineStages.map((stage, i) => (
           <li key={stage}>
-            
+            <a
               href={`#${stage}`}
               className={`rail-node ${i <= activeIndex ? 'is-active' : ''} ${
                 i === activeIndex ? 'is-current' : ''
