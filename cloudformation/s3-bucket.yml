@@ -1,0 +1,53 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Private S3 bucket used as the CloudFront origin. Releases are stored under
+  releases/<commit-sha>/ so the primary and staging CloudFront distributions
+  can point at different content versions for canary deployments.
+
+Parameters:
+  AppName:
+    Type: String
+    Description: Short name used to build resource names (lowercase, no spaces)
+
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub '${AppName}-site-${AWS::AccountId}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # Old release prefixes accumulate on every deploy. Expire release
+          # objects after 30 days so the bucket doesn't grow unbounded -
+          # keeps enough history to roll back to a recent build if needed.
+          - Id: ExpireOldReleases
+            Status: Enabled
+            Prefix: releases/
+            ExpirationInDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref AppName
+
+  # Bucket policy is added by the cloudfront stack once both distributions
+  # (and therefore their ARNs) exist, so CloudFront's OAC condition can
+  # reference them. See cloudfront.yaml -> SiteBucketPolicy.
+
+Outputs:
+  BucketName:
+    Value: !Ref SiteBucket
+  BucketArn:
+    Value: !GetAtt SiteBucket.Arn
+  BucketRegionalDomainName:
+    Value: !GetAtt SiteBucket.RegionalDomainName

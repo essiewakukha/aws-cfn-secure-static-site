@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFront distribution pair for canary/blue-green deploys via CloudFront
+  Continuous Deployment. The primary distribution serves production traffic
+  and points at releases/<CurrentReleaseId>/. The staging distribution is a
+  canary target pointing at releases/<CandidateReleaseId>/, and receives a
+  configurable percentage of production traffic (capped at 15% - an AWS
+  platform limit) while the pipeline verifies the new release is healthy.
+
+Parameters:
+  AppName:
+    Type: String
+  BucketName:
+    Type: String
+  BucketRegionalDomainName:
+    Type: String
+  CurrentReleaseId:
+    Type: String
+    Default: 'placeholder'
+    Description: S3 prefix under releases/ that the PRIMARY distribution serves
+  CandidateReleaseId:
+    Type: String
+    Default: 'placeholder'
+    Description: S3 prefix under releases/ that the STAGING (canary) distribution serves
+  CanaryWeight:
+    Type: Number
+    Default: 0
+    Description: >
+      Fraction of traffic routed to staging, 0 to 0.15 (AWS's hard cap on
+      weighted continuous-deployment traffic). 0 = canary off, staging only
+      reachable directly via its own domain name.
+  CanaryEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+Conditions:
+  IsCanaryEnabled: !Equals [!Ref CanaryEnabled, 'true']
+
+Resources:
+  # --- Origin Access Control: only these two distributions may read the bucket ---
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AppName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # --- SPA-aware error handling, shared by both distributions ---
+  # Unknown paths (client-side routes) must fall back to index.html with a
+  # 200 so React Router can take over instead of showing S3's raw 403/404.
+
+  PrimaryDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AppName} - primary (production)'
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        ContinuousDeploymentPolicyId: !If
+          - IsCanaryEnabled
+          - !Ref ContinuousDeploymentPolicy
+          - !Ref AWS::NoValue
+        Origins:
+          - Id: s3-origin
+            DomainName: !Ref BucketRegionalDomainName
+            OriginPath: !Sub '/releases/${CurrentReleaseId}'
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # AWS managed: CachingOptimized
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  StagingDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Staging: true
+        Comment: !Sub '${AppName} - staging (canary)'
+        DefaultRootObject: index.html #ive not yet created this
+        HttpVersion: http2
+        Origins:
+          - Id: s3-origin
+            DomainName: !Ref BucketRegionalDomainName
+            OriginPath: !Sub '/releases/${CandidateReleaseId}'
+            OriginAccessControlId: !Ref OriginAccessControl
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # AWS managed: CachingOptimized
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  # Continuous deployment policy: routes CanaryWeight of primary's
+  # traffic to staging. Only created once a staging distribution exists,
+  # since it needs the staging distribution's domain name
+  ContinuousDeploymentPolicy:
+    Type: AWS::CloudFront::ContinuousDeploymentPolicy
+    Condition: IsCanaryEnabled
+    Properties:
+      ContinuousDeploymentPolicyConfig:
+        Enabled: true
+        StagingDistributionDnsNames:
+          - !GetAtt StagingDistribution.DomainName
+        TrafficConfig:
+          Type: SingleWeight
+          SingleWeightConfig:
+            Weight: !Ref CanaryWeight
+            SessionStickinessConfig:
+              IdleTTL: 300
+              MaximumTTL: 600
+
+  # --- Bucket policy: only these two distributions (by ARN) may GetObject ---
+  SiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref BucketName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontServicePrincipalPrimary
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${BucketName}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${PrimaryDistribution}'
+          - Sid: AllowCloudFrontServicePrincipalStaging
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:aws:s3:::${BucketName}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${StagingDistribution}'
+
+Outputs:
+  PrimaryDistributionId:
+    Value: !Ref PrimaryDistribution
+  PrimaryDomainName:
+    Value: !GetAtt PrimaryDistribution.DomainName
+  StagingDistributionId:
+    Value: !Ref StagingDistribution
+  StagingDomainName:
+    Value: !GetAtt StagingDistribution.DomainName

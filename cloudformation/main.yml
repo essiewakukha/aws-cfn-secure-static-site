@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Root stack for the portfolio site. Deploys a private S3 origin and a
+  primary/staging CloudFront distribution pair wired for canary releases via
+  CloudFront Continuous Deployment.
+
+  Nested stack templates are referenced by S3 URL and must be uploaded first -
+  this template is deployed with `aws cloudformation package` (see
+  cloudformation/README.md), which handles that upload automatically.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: react-portfolio
+  CurrentReleaseId:
+    Type: String
+    Default: 'placeholder'
+  CandidateReleaseId:
+    Type: String
+    Default: 'placeholder'
+  CanaryWeight:
+    Type: Number
+    Default: 0
+  CanaryEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+
+Resources:
+  S3Stack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./s3-bucket.yaml
+      Parameters:
+        AppName: !Ref AppName
+
+  CloudFrontStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: ./cloudfront.yaml
+      Parameters:
+        AppName: !Ref AppName
+        BucketName: !GetAtt S3Stack.Outputs.BucketName
+        BucketRegionalDomainName: !GetAtt S3Stack.Outputs.BucketRegionalDomainName
+        CurrentReleaseId: !Ref CurrentReleaseId
+        CandidateReleaseId: !Ref CandidateReleaseId
+        CanaryWeight: !Ref CanaryWeight
+        CanaryEnabled: !Ref CanaryEnabled
+
+Outputs:
+  BucketName:
+    Value: !GetAtt S3Stack.Outputs.BucketName
+  PrimaryDistributionId:
+    Value: !GetAtt CloudFrontStack.Outputs.PrimaryDistributionId
+  PrimaryDomainName:
+    Value: !GetAtt CloudFrontStack.Outputs.PrimaryDomainName
+    Description: The live production URL (https://<this value>)
+  StagingDistributionId:
+    Value: !GetAtt CloudFrontStack.Outputs.StagingDistributionId
+  StagingDomainName:
+    Value: !GetAtt CloudFrontStack.Outputs.StagingDomainName
+    Description: Direct URL to preview a candidate release before/without canarying it
