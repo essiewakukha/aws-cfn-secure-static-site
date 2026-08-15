@@ -9,7 +9,6 @@ credentials (OIDC).
 **Live site:** https://d1xzsblye2kc6p.cloudfront.net
 
 ## Repo layout
-## Repo layout
 
 app/ React app (Vite)
 cloudformation/ 5 nested-stack templates
