@@ -201,6 +201,15 @@ jobs:
         env:
           ALARM_NAME: ${{ needs.deploy-infra.outputs.alarm_name }}
 
+      - name: Package nested templates
+        working-directory: cloudformation
+        run: |
+          aws cloudformation package \
+            --template-file main.yml \
+            --s3-bucket "${{ vars.AWS_ARTIFACTS_BUCKET }}" \
+            --s3-prefix cfn-artifacts \
+            --output-template-file main.packaged.yml
+
       - name: Promote canary to production
         run: bash scripts/canary.sh
         env:
