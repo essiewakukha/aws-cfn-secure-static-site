@@ -25,7 +25,7 @@ export const projects = [
     stack: 'React · CloudFormation · CloudFront · GitHub Actions',
     description:
       'A React SPA on a private S3 origin behind CloudFront (OAC-secured), deployed by a GitHub Actions pipeline defined entirely in this repo.',
-    repo: 'https://github.com/essiewakukha/react-portfolio-cfn-cicd',
+    repo: 'https://github.com/essiewakukha/aws-cfn-secure-static-site',
   },
   {
     status: 'deployed',
@@ -33,7 +33,7 @@ export const projects = [
     stack: 'CodePipeline · CodeBuild · CodeDeploy · ECS Fargate',
     description:
       'Blue/green deployment pipeline promoting a containerized app across dev and prod AWS accounts, with automated rollback on CloudWatch alarm.',
-    repo: 'https://github.com/essiewakukha/aws-cicd-blue-green-pipeline',
+    repo: 'https://github.com/essiewakukha/aws-cfn-secure-static-site/tree/main/cloudformation/pipeline',
   },
   {
     status: 'building',
