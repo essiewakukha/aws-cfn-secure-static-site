@@ -152,11 +152,14 @@ Resources:
               - cloudformation:CreateStack
               - cloudformation:UpdateStack
               - cloudformation:DescribeStacks
+              - cloudformation:ListStacks
               - cloudformation:DescribeStackEvents
               - cloudformation:DescribeStackResources
               - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
               - cloudformation:CreateChangeSet
               - cloudformation:DescribeChangeSet
+              - cloudformation:ListChangeSets
               - cloudformation:ExecuteChangeSet
               - cloudformation:DeleteChangeSet
               - cloudformation:ListStackResources
