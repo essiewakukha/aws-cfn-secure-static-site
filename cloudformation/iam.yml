@@ -148,8 +148,7 @@ Resources:
               - cloudformation:ListStackResources
               - cloudformation:ValidateTemplate
             Resource:
-              - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppName}-*/*'
-
+              - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppName}*/*'
           - Sid: CloudFrontManage
             Effect: Allow
             Action:
