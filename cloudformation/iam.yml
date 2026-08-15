@@ -10,10 +10,25 @@ Parameters:
     Default: react-portfolio
   GitHubOrg:
     Type: String
-    Description: Your GitHub username or org, e.g "essiewakukha"
+    Description: Your GitHub username or org, e.g. "essiewakukha"
+  GitHubOrgId:
+    Type: String
+    Description: >
+      Numeric GitHub account/org ID (not the name). GitHub's OIDC token now
+      sends an immutable sub claim like "repo:name@ID/repo@ID:*" instead of
+      just names, so the trust policy has to match on IDs too. Find yours by
+      decoding a token from a workflow run (see the DEBUG step in deploy.yml)
+      and reading "repository_owner_id", or via
+      `curl -s https://api.github.com/users/YOUR_USERNAME | jq .id`
   GitHubRepo:
     Type: String
-    Description: Repo name only"
+    Description: Repo name only, e.g. "aws-cfn-secure-static-site" 
+  GitHubRepoId:
+    Type: String
+    Description: >
+      Numeric GitHub repository ID. Same reasoning as GitHubOrgId - read
+      "repository_id" from a decoded token, or via
+      `curl -s https://api.github.com/repos/OWNER/REPO | jq .id`
   CreateOidcProvider:
     Type: String
     Default: 'true'
@@ -81,9 +96,9 @@ Resources:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
               StringLike:
-                # Restricts to this exact repo, any branch/PR/environment.
-                # Tighten to :ref:refs/heads/main if you only want main to deploy.
-                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+                # Immutable form - GitHub embeds numeric owner/repo IDs now,
+                # not just names (names can be renamed/transferred; IDs can't).
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrg}@${GitHubOrgId}/${GitHubRepo}@${GitHubRepoId}:*'
 
   DeployPolicy:
     Type: AWS::IAM::ManagedPolicy
