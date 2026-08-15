@@ -11,16 +11,21 @@ set -euo pipefail
 
 echo "Promoting staging config to primary distribution..."
 
-# UpdateDistributionWithStagingConfig requires the PRIMARY distribution's
-# current ETag (optimistic locking) - fetch it fresh right before the call.
+# UpdateDistributionWithStagingConfig is unusual: its IfMatch requires BOTH
+# distributions' current ETags together, as "<primary ETag>, <staging ETag>"
+# - not just the primary's, unlike every other CloudFront update call.
 PRIMARY_ETAG=$(aws cloudfront get-distribution \
   --id "$PRIMARY_DISTRIBUTION_ID" \
+  --query 'ETag' --output text)
+
+STAGING_ETAG=$(aws cloudfront get-distribution \
+  --id "$STAGING_DISTRIBUTION_ID" \
   --query 'ETag' --output text)
 
 aws cloudfront update-distribution-with-staging-config \
   --id "$PRIMARY_DISTRIBUTION_ID" \
   --staging-distribution-id "$STAGING_DISTRIBUTION_ID" \
-  --if-match "$PRIMARY_ETAG" \
+  --if-match "${PRIMARY_ETAG}, ${STAGING_ETAG}" \
   > /dev/null
 
 echo "Promoted. Primary now serves the release that was canarying."
