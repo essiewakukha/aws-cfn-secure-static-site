@@ -1,0 +1,71 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudWatch alarm on the staging (canary) distribution's 5xx error rate.
+  The deploy pipeline polls this alarm's state after ramping canary traffic
+  and only promotes to production if it's still OK.
+
+  IMPORTANT: CloudFront publishes metrics to CloudWatch in us-east-1 only,
+  regardless of where the distribution itself serves traffic from. This
+  stack (and the whole app stack, for simplicity) must be deployed in
+  us-east-1 - the same region CloudFront also requires for ACM certs.
+
+Parameters:
+  AppName:
+    Type: String
+  StagingDistributionId:
+    Type: String
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Optional - subscribes this address to deploy/rollback alerts
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+
+Resources:
+  DeployAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub '${AppName}-deploy-alerts'
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      TopicArn: !Ref DeployAlertsTopic
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+
+  StagingErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AppName}-canary-5xx-error-rate'
+      AlarmDescription: >
+        Canary release is producing server errors. The pipeline checks this
+        before promoting - ALARM state blocks promotion.
+      Namespace: AWS/CloudFront
+      MetricName: 5xxErrorRate
+      Dimensions:
+        - Name: DistributionId
+          Value: !Ref StagingDistributionId
+        - Name: Region
+          Value: Global
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      DatapointsToAlarm: 2
+      Threshold: 1.0
+      ComparisonOperator: GreaterThanThreshold
+      # No production traffic has reached the canary yet before the first
+      # deploy - don't alarm on absent data.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref DeployAlertsTopic
+      OKActions:
+        - !Ref DeployAlertsTopic
+
+Outputs:
+  AlarmName:
+    Value: !Ref StagingErrorRateAlarm
+  DeployAlertsTopicArn:
+    Value: !Ref DeployAlertsTopic

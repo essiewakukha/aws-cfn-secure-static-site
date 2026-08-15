@@ -1,0 +1,212 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      canary_weight:
+        description: 'Fraction of traffic to canary (0-0.15)'
+        default: '0.10'
+
+permissions:
+  id-token: write   # required for OIDC -> AssumeRoleWithWebIdentity
+  contents: read
+
+env:
+  AWS_REGION: us-east-1   # CloudFront metrics + ACM certs require us-east-1
+  APP_NAME: react-portfolio
+  STACK_NAME: react-portfolio
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.vars.outputs.release_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Set build variables
+        id: vars
+        run: |
+          echo "release_id=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "deploy_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Lint
+        working-directory: app
+        run: npm run lint
+
+      - name: Build
+        working-directory: app
+        env:
+          VITE_COMMIT_SHA: ${{ github.sha }}
+          VITE_DEPLOY_TIME: ${{ steps.vars.outputs.deploy_time }}
+        run: npm run build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-build
+          path: app/dist/
+          retention-days: 7
+
+  deploy-infra:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    outputs:
+      stack_existed: ${{ steps.check.outputs.exists }}
+      primary_id: ${{ steps.outputs.outputs.primary_id }}
+      staging_id: ${{ steps.outputs.outputs.staging_id }}
+      bucket_name: ${{ steps.outputs.outputs.bucket_name }}
+      alarm_name: ${{ steps.outputs.outputs.alarm_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check whether the stack already exists
+        id: check
+        run: |
+          if aws cloudformation describe-stacks --stack-name "$STACK_NAME" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package nested templates
+        working-directory: cloudformation
+        run: |
+          aws cloudformation package \
+            --template-file main.yml \
+            --s3-bucket "${{ vars.AWS_ARTIFACTS_BUCKET }}" \
+            --s3-prefix cfn-artifacts \
+            --output-template-file main.packaged.yml
+
+      - name: First deploy - bootstrap stack with no canary
+        if: steps.check.outputs.exists == 'false'
+        working-directory: cloudformation
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file main.packaged.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              AppName="$APP_NAME" \
+              CurrentReleaseId=${{ needs.build-and-test.outputs.release_id }} \
+              CandidateReleaseId=${{ needs.build-and-test.outputs.release_id }} \
+              CanaryEnabled=false \
+              CanaryWeight=0 \
+              AlertEmail="${{ vars.ALERT_EMAIL }}"
+
+      - name: Subsequent deploy - open a canary at the candidate release
+        if: steps.check.outputs.exists == 'true'
+        working-directory: cloudformation
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file main.packaged.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              AppName="$APP_NAME" \
+              CandidateReleaseId=${{ needs.build-and-test.outputs.release_id }} \
+              CanaryEnabled=true \
+              CanaryWeight=${{ github.event.inputs.canary_weight || '0.10' }} \
+              AlertEmail="${{ vars.ALERT_EMAIL }}" \
+            --no-fail-on-empty-changeset
+
+      - name: Read stack outputs
+        id: outputs
+        run: |
+          get_output() {
+            aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue" --output text
+          }
+          echo "primary_id=$(get_output PrimaryDistributionId)" >> "$GITHUB_OUTPUT"
+          echo "staging_id=$(get_output StagingDistributionId)" >> "$GITHUB_OUTPUT"
+          echo "bucket_name=$(get_output BucketName)" >> "$GITHUB_OUTPUT"
+          echo "alarm_name=$(get_output CanaryAlarmName)" >> "$GITHUB_OUTPUT"
+
+  sync-release:
+    needs: [build-and-test, deploy-infra]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-build
+          path: dist
+
+      - name: Upload build to its release prefix
+        run: |
+          RELEASE_ID=${{ needs.build-and-test.outputs.release_id }}
+          BUCKET=${{ needs.deploy-infra.outputs.bucket_name }}
+
+          # Hashed assets (js/css from Vite) are content-addressed and safe
+          # to cache forever; index.html is not.
+          aws s3 sync dist "s3://${BUCKET}/releases/${RELEASE_ID}" \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude index.html
+
+          aws s3 cp dist/index.html "s3://${BUCKET}/releases/${RELEASE_ID}/index.html" \
+            --cache-control "no-cache"
+
+      - name: Invalidate staging distribution cache
+        if: needs.deploy-infra.outputs.stack_existed == 'true'
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ needs.deploy-infra.outputs.staging_id }} \
+            --paths "/*"
+
+  canary-bake-and-promote:
+    needs: [build-and-test, deploy-infra, sync-release]
+    if: needs.deploy-infra.outputs.stack_existed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Bake period - let real traffic hit the canary
+        run: |
+          echo "Waiting for CloudWatch to collect enough datapoints..."
+          sleep 600   # 2 x 300s alarm evaluation periods
+
+      - name: Check canary health
+        run: bash scripts/check-canary-health.sh
+        env:
+          ALARM_NAME: ${{ needs.deploy-infra.outputs.alarm_name }}
+
+      - name: Promote canary to production
+        run: bash scripts/canary.sh
+        env:
+          STACK_NAME: ${{ env.STACK_NAME }}
+          APP_NAME: ${{ env.APP_NAME }}
+          PRIMARY_DISTRIBUTION_ID: ${{ needs.deploy-infra.outputs.primary_id }}
+          STAGING_DISTRIBUTION_ID: ${{ needs.deploy-infra.outputs.staging_id }}
+          RELEASE_ID: ${{ needs.build-and-test.outputs.release_id }}
+
+      - name: Invalidate primary distribution cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ needs.deploy-infra.outputs.primary_id }} \
+            --paths "/*"
