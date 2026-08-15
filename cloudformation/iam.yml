@@ -1,0 +1,182 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  GitHub Actions OIDC trust + a scoped deploy role. GitHub exchanges its
+  workflow JWT for short-lived AWS credentials via sts:AssumeRoleWithWebIdentity
+  - no IAM access keys are ever stored in GitHub secrets.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: react-portfolio
+  GitHubOrg:
+    Type: String
+    Description: Your GitHub username or org, e.g. "your-username"
+  GitHubRepo:
+    Type: String
+    Description: Repo name only, e.g. "react-portfolio-cfn-cicd"
+  CreateOidcProvider:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >
+      The token.actions.githubusercontent.com OIDC provider is account-wide,
+      not per-project. If a previous project already created one, set this to
+      "false" and fill in ExistingOidcProviderArn instead - CloudFormation
+      fails if you try to create a duplicate.
+  ExistingOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: Only used when CreateOidcProvider is "false"
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  # cloudformation package needs somewhere to upload nested templates
+  # BEFORE the main stack (and its site bucket) exists - this bucket is
+  # part of one-time account bootstrap, deployed by hand, not by the pipeline.
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${AppName}-cfn-artifacts-${AWS::AccountId}'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldTemplates
+            Status: Enabled
+            ExpirationInDays: 30
+
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # AWS validates against its own trusted CA bundle now rather than this
+      # exact value, but the CFN resource still requires one to be present.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AppName}-github-actions-deploy'
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - ShouldCreateOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Ref ExistingOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                # Restricts to this exact repo, any branch/PR/environment.
+                # Tighten to :ref:refs/heads/main if you only want main to deploy.
+                token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubOrg}/${GitHubRepo}:*'
+
+  DeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${AppName}-github-actions-deploy-policy'
+      Roles:
+        - !Ref DeployRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          # `aws cloudformation package` uploads nested templates here -
+          # this bucket exists before the main stack does (see ArtifactsBucket above).
+          - Sid: ArtifactsBucketReadWrite
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:ListBucket
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub '${ArtifactsBucket.Arn}/*'
+
+          - Sid: SiteBucketReadWrite
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+              - s3:ListBucket
+            Resource:
+              - !Sub 'arn:aws:s3:::${AppName}-site-${AWS::AccountId}'
+              - !Sub 'arn:aws:s3:::${AppName}-site-${AWS::AccountId}/*'
+
+          - Sid: CloudFormationDeploy
+            Effect: Allow
+            Action:
+              - cloudformation:CreateStack
+              - cloudformation:UpdateStack
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResources
+              - cloudformation:GetTemplate
+              - cloudformation:CreateChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:ListStackResources
+              - cloudformation:ValidateTemplate
+            Resource:
+              - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppName}-*/*'
+
+          - Sid: CloudFrontManage
+            Effect: Allow
+            Action:
+              - cloudfront:CreateDistribution
+              - cloudfront:GetDistribution
+              - cloudfront:UpdateDistribution
+              - cloudfront:ListDistributions
+              - cloudfront:TagResource
+              - cloudfront:CreateInvalidation
+              - cloudfront:GetInvalidation
+              - cloudfront:CreateOriginAccessControl
+              - cloudfront:GetOriginAccessControl
+              - cloudfront:UpdateOriginAccessControl
+              - cloudfront:CreateContinuousDeploymentPolicy
+              - cloudfront:GetContinuousDeploymentPolicy
+              - cloudfront:UpdateContinuousDeploymentPolicy
+              - cloudfront:DeleteContinuousDeploymentPolicy
+              - cloudfront:UpdateDistributionWithStagingConfig
+              - cloudfront:CopyDistribution
+            # CloudFront ARNs are global (no region) and distribution IDs
+            # don't exist until stack creation - can't pre-scope further.
+            Resource: '*'
+
+          - Sid: MonitoringReadOnly
+            Effect: Allow
+            Action:
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:GetMetricData
+              - cloudwatch:GetMetricStatistics
+            Resource: '*'
+
+          - Sid: SNSPublishForDeployNotifications
+            Effect: Allow
+            Action:
+              - sns:Publish
+            Resource:
+              - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${AppName}-*'
+
+Outputs:
+  DeployRoleArn:
+    Value: !GetAtt DeployRole.Arn
+    Description: Put this in the GitHub repo as the AWS_DEPLOY_ROLE_ARN variable
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+    Description: Put this in the GitHub repo as the AWS_ARTIFACTS_BUCKET variable
