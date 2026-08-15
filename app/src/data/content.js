@@ -1,14 +1,12 @@
-// Edit this file to make the site yours — no component code needs to change.
-
 export const profile = {
-  name: 'Your Name',
+  name: 'Esther Wakukha',
   role: 'DevOps Engineer',
   tagline: 'I build infrastructure that ships itself — pipelines, not tickets.',
   location: 'Nairobi, Kenya',
   links: {
-    github: 'https://github.com/your-username',
-    linkedin: 'https://linkedin.com/in/your-profile',
-    email: 'you@example.com',
+    github: 'https://github.com/essiewakukha',
+    linkedin: 'https://www.linkedin.com/in/esther-wakukha-257886241/',
+    email: 'esthermwakukha@gmail.com',
   },
 };
 
@@ -27,7 +25,7 @@ export const projects = [
     stack: 'React · CloudFormation · CloudFront · GitHub Actions',
     description:
       'A React SPA on a private S3 origin behind CloudFront (OAC-secured), deployed by a GitHub Actions pipeline defined entirely in this repo.',
-    repo: 'https://github.com/your-username/react-portfolio-cfn-cicd',
+    repo: 'https://github.com/essiewakukha/react-portfolio-cfn-cicd',
   },
   {
     status: 'deployed',
@@ -35,7 +33,7 @@ export const projects = [
     stack: 'CodePipeline · CodeBuild · CodeDeploy · ECS Fargate',
     description:
       'Blue/green deployment pipeline promoting a containerized app across dev and prod AWS accounts, with automated rollback on CloudWatch alarm.',
-    repo: 'https://github.com/your-username/aws-cicd-blue-green-pipeline',
+    repo: 'https://github.com/essiewakukha/aws-cicd-blue-green-pipeline',
   },
   {
     status: 'building',
