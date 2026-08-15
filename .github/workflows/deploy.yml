@@ -9,14 +9,22 @@ on:
         description: 'Fraction of traffic to canary (0-0.15)'
         default: '0.10'
 
-permissions:
-  id-token: write   # required for OIDC -> AssumeRoleWithWebIdentity
-  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write  # This is mandatory for OIDC
+      contents: read   # This is mandatory to checkout code
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-env:
-  AWS_REGION: us-east-1   # CloudFront metrics + ACM certs require us-east-1
-  APP_NAME: react-portfolio
-  STACK_NAME: react-portfolio
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }} # Check that this matches Output DeployRoleArn
+          aws-region: us-east-1 
+
 
 jobs:
   build-and-test:

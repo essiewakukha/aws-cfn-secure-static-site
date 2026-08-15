@@ -10,10 +10,10 @@ Parameters:
     Default: react-portfolio
   GitHubOrg:
     Type: String
-    Description: Your GitHub username or org, e.g. "your-username"
+    Description: Your GitHub username or org, e.g "essiewakukha"
   GitHubRepo:
     Type: String
-    Description: Repo name only, e.g. "react-portfolio-cfn-cicd"
+    Description: Repo name only"
   CreateOidcProvider:
     Type: String
     Default: 'true'
