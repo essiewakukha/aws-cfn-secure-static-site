@@ -10,7 +10,7 @@ Parameters:
     Default: react-portfolio
   GitHubOrg:
     Type: String
-    Description: Your GitHub username or org, e.g. "essiewakukha"
+    Description: Your GitHub username or org, e.g. "your-username"
   GitHubOrgId:
     Type: String
     Description: >
@@ -22,7 +22,7 @@ Parameters:
       `curl -s https://api.github.com/users/YOUR_USERNAME | jq .id`
   GitHubRepo:
     Type: String
-    Description: Repo name only, e.g. "aws-cfn-secure-static-site" 
+    Description: Repo name only, e.g. "react-portfolio-cfn-cicd"
   GitHubRepoId:
     Type: String
     Description: >
@@ -124,10 +124,24 @@ Resources:
           - Sid: SiteBucketReadWrite
             Effect: Allow
             Action:
+              - s3:CreateBucket
+              - s3:DeleteBucket
               - s3:GetObject
               - s3:PutObject
               - s3:DeleteObject
               - s3:ListBucket
+              - s3:PutBucketPolicy
+              - s3:GetBucketPolicy
+              - s3:PutEncryptionConfiguration
+              - s3:GetEncryptionConfiguration
+              - s3:PutBucketPublicAccessBlock
+              - s3:GetBucketPublicAccessBlock
+              - s3:PutBucketVersioning
+              - s3:GetBucketVersioning
+              - s3:PutLifecycleConfiguration
+              - s3:GetLifecycleConfiguration
+              - s3:PutBucketTagging
+              - s3:GetBucketTagging
             Resource:
               - !Sub 'arn:aws:s3:::${AppName}-site-${AWS::AccountId}'
               - !Sub 'arn:aws:s3:::${AppName}-site-${AWS::AccountId}/*'
@@ -149,19 +163,24 @@ Resources:
               - cloudformation:ValidateTemplate
             Resource:
               - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${AppName}*/*'
+
           - Sid: CloudFrontManage
             Effect: Allow
             Action:
               - cloudfront:CreateDistribution
               - cloudfront:GetDistribution
               - cloudfront:UpdateDistribution
+              - cloudfront:DeleteDistribution
               - cloudfront:ListDistributions
               - cloudfront:TagResource
+              - cloudfront:UntagResource
+              - cloudfront:ListTagsForResource
               - cloudfront:CreateInvalidation
               - cloudfront:GetInvalidation
               - cloudfront:CreateOriginAccessControl
               - cloudfront:GetOriginAccessControl
               - cloudfront:UpdateOriginAccessControl
+              - cloudfront:DeleteOriginAccessControl
               - cloudfront:CreateContinuousDeploymentPolicy
               - cloudfront:GetContinuousDeploymentPolicy
               - cloudfront:UpdateContinuousDeploymentPolicy
@@ -172,17 +191,28 @@ Resources:
             # don't exist until stack creation - can't pre-scope further.
             Resource: '*'
 
-          - Sid: MonitoringReadOnly
+          - Sid: MonitoringManage
             Effect: Allow
             Action:
               - cloudwatch:DescribeAlarms
               - cloudwatch:GetMetricData
               - cloudwatch:GetMetricStatistics
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:TagResource
             Resource: '*'
 
-          - Sid: SNSPublishForDeployNotifications
+          - Sid: SNSManage
             Effect: Allow
             Action:
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:SetTopicAttributes
+              - sns:GetTopicAttributes
+              - sns:Subscribe
+              - sns:Unsubscribe
+              - sns:ListSubscriptionsByTopic
+              - sns:TagResource
               - sns:Publish
             Resource:
               - !Sub 'arn:aws:sns:${AWS::Region}:${AWS::AccountId}:${AppName}-*'
